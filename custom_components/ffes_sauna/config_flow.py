@@ -8,6 +8,8 @@ import aiohttp
 import asyncio
 import socket
 import voluptuous as vol
+from concurrent.futures import ThreadPoolExecutor
+import time
 
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST
@@ -29,15 +31,45 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 )
 
 
-async def resolve_host(host: str) -> str:
-    """Resolve mDNS hostname to IP address if needed."""
-    if host.endswith('.local'):
+def _resolve_host_sync(host: str, timeout: float = 5.0) -> str:
+    """Resolve mDNS hostname to IP address synchronously with timeout."""
+    if not host.endswith('.local'):
+        return host
+
+    original_timeout = socket.getdefaulttimeout()
+    try:
+        socket.setdefaulttimeout(timeout)
+        # Try multiple resolution methods for better mDNS support
         try:
+            # Method 1: Standard gethostbyname
             return socket.gethostbyname(host)
         except socket.gaierror:
-            # If mDNS resolution fails, try the original host
-            return host
-    return host
+            try:
+                # Method 2: getaddrinfo with explicit family
+                result = socket.getaddrinfo(host, None, socket.AF_INET)
+                if result:
+                    return result[0][4][0]
+            except (socket.gaierror, IndexError):
+                pass
+
+        # If all methods fail, return original host
+        _LOGGER.warning("Failed to resolve mDNS hostname %s, using as-is", host)
+        return host
+
+    finally:
+        socket.setdefaulttimeout(original_timeout)
+
+
+async def resolve_host(hass: HomeAssistant, host: str) -> str:
+    """Resolve mDNS hostname to IP address if needed."""
+    if not host.endswith('.local'):
+        return host
+
+    try:
+        return await hass.async_add_executor_job(_resolve_host_sync, host, 5.0)
+    except Exception as err:
+        _LOGGER.warning("Error resolving mDNS hostname %s: %s", host, err)
+        return host
 
 
 async def discover_sauna(hass: HomeAssistant) -> str | None:
@@ -50,27 +82,50 @@ async def discover_sauna(hass: HomeAssistant) -> str | None:
     ]
 
     for host in candidates:
+        _LOGGER.debug("Trying to discover sauna at %s", host)
         try:
-            resolved_host = await hass.async_add_executor_job(resolve_host, host)
-            timeout = aiohttp.ClientTimeout(total=5)  # Shorter timeout for discovery
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(f"http://{resolved_host}/sauna-data") as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        # Validate we got expected sauna data structure
-                        if "controllerStatus" in data and "actualTemp" in data:
-                            _LOGGER.info("Discovered FFES sauna at %s", host)
-                            return host
-        except Exception:
-            continue  # Try next candidate
+            # Try both resolved IP and original hostname
+            hosts_to_try = []
 
+            # First try resolving mDNS
+            if host.endswith('.local'):
+                resolved_host = await resolve_host(hass, host)
+                if resolved_host != host:  # Resolution succeeded
+                    hosts_to_try.append(resolved_host)
+                    _LOGGER.debug("Resolved %s to %s", host, resolved_host)
+
+            # Always try the original hostname as fallback
+            hosts_to_try.append(host)
+
+            for target_host in hosts_to_try:
+                try:
+                    timeout = aiohttp.ClientTimeout(total=5)
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        url = f"http://{target_host}/sauna-data"
+                        _LOGGER.debug("Testing connection to %s", url)
+                        async with session.get(url) as response:
+                            if response.status == 200:
+                                data = await response.json()
+                                # Validate we got expected sauna data structure
+                                if "controllerStatus" in data and "actualTemp" in data:
+                                    _LOGGER.info("Discovered FFES sauna at %s (using %s)", host, target_host)
+                                    return host  # Return original hostname for user display
+                except Exception as e:
+                    _LOGGER.debug("Failed to connect to %s: %s", target_host, e)
+                    continue
+
+        except Exception as e:
+            _LOGGER.debug("Error testing %s: %s", host, e)
+            continue
+
+    _LOGGER.debug("No sauna discovered automatically")
     return None
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
     """Validate the user input allows us to connect."""
     host = data[CONF_HOST]
-    resolved_host = await hass.async_add_executor_job(resolve_host, host)
+    resolved_host = await resolve_host(hass, host)
 
     # Test connection to the sauna
     timeout = aiohttp.ClientTimeout(total=10)

@@ -33,20 +33,44 @@ class FFESSaunaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             update_interval=timedelta(seconds=scan_interval),
         )
 
-    def _resolve_host(self, host: str) -> str:
-        """Resolve mDNS hostname to IP address if needed."""
-        if host.endswith('.local'):
+    def _resolve_host_sync(self, host: str, timeout: float = 5.0) -> str:
+        """Resolve mDNS hostname to IP address synchronously with timeout."""
+        if not host.endswith('.local'):
+            return host
+
+        original_timeout = socket.getdefaulttimeout()
+        try:
+            socket.setdefaulttimeout(timeout)
+            # Try multiple resolution methods for better mDNS support
             try:
+                # Method 1: Standard gethostbyname
                 return socket.gethostbyname(host)
             except socket.gaierror:
-                # If mDNS resolution fails, try the original host
-                return host
-        return host
+                try:
+                    # Method 2: getaddrinfo with explicit family
+                    result = socket.getaddrinfo(host, None, socket.AF_INET)
+                    if result:
+                        return result[0][4][0]
+                except (socket.gaierror, IndexError):
+                    pass
+
+            # If all methods fail, return original host
+            _LOGGER.warning("Failed to resolve mDNS hostname %s, using as-is", host)
+            return host
+
+        finally:
+            socket.setdefaulttimeout(original_timeout)
 
     async def _get_resolved_host(self) -> str:
         """Get resolved host, caching the result."""
         if self._resolved_host is None:
-            self._resolved_host = await self.hass.async_add_executor_job(self._resolve_host, self.host)
+            try:
+                self._resolved_host = await self.hass.async_add_executor_job(
+                    self._resolve_host_sync, self.host, 5.0
+                )
+            except Exception as err:
+                _LOGGER.warning("Error resolving mDNS hostname %s: %s", self.host, err)
+                self._resolved_host = self.host
         return self._resolved_host
 
     async def _async_update_data(self) -> dict[str, Any]:
