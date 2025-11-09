@@ -40,9 +40,33 @@ A Home Assistant integration for FFES Sauna controllers that provides comprehens
    - **Host or IP Address**: The IP address or hostname of your sauna (default: `ffes.local`)
    - **Update Interval**: How often to poll the sauna for updates in seconds (default: 15, minimum: 5, maximum: 300)
 
-### Method 2: HACS Installation (if published)
+### Method 2: HACS Installation
 
-*Note: This integration is not yet published to HACS. Use manual installation for now.*
+1. **Add Custom Repository**:
+   - Open HACS in Home Assistant
+   - Go to "Integrations"
+   - Click the three dots menu → "Custom repositories"
+   - Add this repository URL: `https://github.com/mattstasch/ffes-sauna-homeassistant`
+   - Select "Integration" as the category
+   - Click "Add"
+
+2. **Install the Integration**:
+   - Search for "FFES Sauna" in HACS
+   - Click "Install"
+   - Restart Home Assistant
+   - Go to Configuration → Integrations → Add Integration
+   - Search for "FFES Sauna" and configure
+
+### Method 3: Git Clone Installation
+
+```bash
+cd /config/custom_components
+git clone https://github.com/mattstasch/ffes-sauna-homeassistant.git
+mv ffes-sauna-homeassistant/ffes_sauna ./
+rm -rf ffes-sauna-homeassistant
+```
+
+Then restart Home Assistant and add the integration.
 
 ## Configuration
 
