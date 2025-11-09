@@ -194,7 +194,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Create entry with discovered device info
         data = {
-            CONF_HOST: self._discovered_device["hostname"],  # Use hostname for user display
+            CONF_HOST: self._discovered_device["ip_address"],  # Use IP address for reliability
             CONF_SCAN_INTERVAL: user_input[CONF_SCAN_INTERVAL],
         }
 
