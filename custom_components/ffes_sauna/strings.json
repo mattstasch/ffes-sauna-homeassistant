@@ -7,6 +7,20 @@
           "host": "Host or IP Address",
           "scan_interval": "Update Interval (seconds)"
         }
+      },
+      "discovery": {
+        "description": "FFES Sauna discovered at {host}. Would you like to add it?",
+        "data": {
+          "confirm": "Add this sauna",
+          "scan_interval": "Update Interval (seconds)"
+        }
+      },
+      "manual": {
+        "description": "No sauna was automatically discovered. Please enter the connection details manually.",
+        "data": {
+          "host": "Host or IP Address",
+          "scan_interval": "Update Interval (seconds)"
+        }
       }
     },
     "error": {
