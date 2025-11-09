@@ -8,17 +8,16 @@
           "scan_interval": "Update Interval (seconds)"
         }
       },
-      "discovery": {
-        "description": "FFES Sauna discovered at {host}. Would you like to add it?",
-        "data": {
-          "confirm": "Add this sauna",
-          "scan_interval": "Update Interval (seconds)"
-        }
-      },
       "manual": {
         "description": "No sauna was automatically discovered. Please enter the connection details manually.",
         "data": {
           "host": "Host or IP Address",
+          "scan_interval": "Update Interval (seconds)"
+        }
+      },
+      "zeroconf_confirm": {
+        "description": "FFES Sauna discovered at {hostname} ({ip_address}). Would you like to add it?",
+        "data": {
           "scan_interval": "Update Interval (seconds)"
         }
       }
@@ -29,7 +28,8 @@
       "unknown": "Unexpected error occurred."
     },
     "abort": {
-      "already_configured": "Device is already configured"
+      "already_configured": "Device is already configured",
+      "ipv6_not_supported": "IPv6 addresses are not supported"
     }
   }
 }

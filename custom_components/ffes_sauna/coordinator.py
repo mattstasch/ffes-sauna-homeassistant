@@ -35,6 +35,14 @@ class FFESSaunaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _resolve_host_sync(self, host: str, timeout: float = 5.0) -> str:
         """Resolve mDNS hostname to IP address synchronously with timeout."""
+        # If it's already an IP address, return as-is
+        try:
+            socket.inet_aton(host)
+            return host  # Valid IPv4 address
+        except socket.error:
+            pass
+
+        # If it's not a .local hostname, return as-is
         if not host.endswith('.local'):
             return host
 
@@ -44,13 +52,17 @@ class FFESSaunaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Try multiple resolution methods for better mDNS support
             try:
                 # Method 1: Standard gethostbyname
-                return socket.gethostbyname(host)
+                resolved = socket.gethostbyname(host)
+                _LOGGER.debug("Resolved %s to %s via gethostbyname", host, resolved)
+                return resolved
             except socket.gaierror:
                 try:
                     # Method 2: getaddrinfo with explicit family
                     result = socket.getaddrinfo(host, None, socket.AF_INET)
                     if result:
-                        return result[0][4][0]
+                        resolved = result[0][4][0]
+                        _LOGGER.debug("Resolved %s to %s via getaddrinfo", host, resolved)
+                        return resolved
                 except (socket.gaierror, IndexError):
                     pass
 

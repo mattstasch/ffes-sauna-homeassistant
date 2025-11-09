@@ -12,10 +12,12 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 
 from homeassistant import config_entries
+from homeassistant.components import zeroconf
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DEFAULT_HOST, DEFAULT_SCAN_INTERVAL, DOMAIN, CONF_SCAN_INTERVAL
 
@@ -72,54 +74,6 @@ async def resolve_host(hass: HomeAssistant, host: str) -> str:
         return host
 
 
-async def discover_sauna(hass: HomeAssistant) -> str | None:
-    """Try to discover FFES sauna automatically."""
-    candidates = [
-        "ffes.local",
-        "sauna.local",
-        "192.168.1.100",  # Common default IP
-        "192.168.0.100",
-    ]
-
-    for host in candidates:
-        _LOGGER.debug("Trying to discover sauna at %s", host)
-        try:
-            # Try both resolved IP and original hostname
-            hosts_to_try = []
-
-            # First try resolving mDNS
-            if host.endswith('.local'):
-                resolved_host = await resolve_host(hass, host)
-                if resolved_host != host:  # Resolution succeeded
-                    hosts_to_try.append(resolved_host)
-                    _LOGGER.debug("Resolved %s to %s", host, resolved_host)
-
-            # Always try the original hostname as fallback
-            hosts_to_try.append(host)
-
-            for target_host in hosts_to_try:
-                try:
-                    timeout = aiohttp.ClientTimeout(total=5)
-                    async with aiohttp.ClientSession(timeout=timeout) as session:
-                        url = f"http://{target_host}/sauna-data"
-                        _LOGGER.debug("Testing connection to %s", url)
-                        async with session.get(url) as response:
-                            if response.status == 200:
-                                data = await response.json()
-                                # Validate we got expected sauna data structure
-                                if "controllerStatus" in data and "actualTemp" in data:
-                                    _LOGGER.info("Discovered FFES sauna at %s (using %s)", host, target_host)
-                                    return host  # Return original hostname for user display
-                except Exception as e:
-                    _LOGGER.debug("Failed to connect to %s: %s", target_host, e)
-                    continue
-
-        except Exception as e:
-            _LOGGER.debug("Error testing %s: %s", host, e)
-            continue
-
-    _LOGGER.debug("No sauna discovered automatically")
-    return None
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
@@ -159,60 +113,96 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._discovered_host: str | None = None
+        self._discovered_device: dict[str, Any] | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle the initial step."""
-        # Try autodetection first
-        discovered_host = await discover_sauna(self.hass)
-        if discovered_host:
-            # Check if already configured
-            await self.async_set_unique_id(discovered_host)
-            self._abort_if_unique_id_configured()
-
-            return await self.async_step_discovery({"host": discovered_host})
+        # Note: Zeroconf discovery happens automatically when devices broadcast
+        # This step is for manual configuration when automatic discovery doesn't work
 
         return await self.async_step_manual()
 
-    async def async_step_discovery(
-        self, discovery_info: dict[str, Any] | None = None, user_input: dict[str, Any] | None = None
+    async def async_step_zeroconf(
+        self, discovery_info: zeroconf.ZeroconfServiceInfo
     ) -> FlowResult:
-        """Handle discovery step."""
-        # If this is the initial call with discovery info
-        if discovery_info is not None and user_input is None:
-            host = discovery_info["host"]
-            self._discovered_host = host
+        """Handle zeroconf discovery."""
+        _LOGGER.debug("Zeroconf discovery: %s", discovery_info)
 
+        # Filter IPv6 addresses - not supported
+        if discovery_info.ip_address.version != 4:
+            return self.async_abort(reason="ipv6_not_supported")
+
+        hostname = discovery_info.hostname.rstrip(".")
+        ip_address = str(discovery_info.ip_address)
+
+        _LOGGER.info("Discovered FFES sauna via zeroconf at %s (%s)", hostname, ip_address)
+
+        # Validate this is actually an FFES sauna by checking the API
+        session = async_get_clientsession(self.hass)
+        try:
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with session.get(f"http://{ip_address}/sauna-data", timeout=timeout) as response:
+                if response.status != 200:
+                    return self.async_abort(reason="cannot_connect")
+
+                data = await response.json()
+                if "controllerStatus" not in data or "actualTemp" not in data:
+                    return self.async_abort(reason="invalid_data")
+
+        except Exception as err:
+            _LOGGER.debug("Failed to validate discovered device: %s", err)
+            return self.async_abort(reason="cannot_connect")
+
+        # Use IP address as unique ID (more reliable than hostname)
+        await self.async_set_unique_id(ip_address)
+        self._abort_if_unique_id_configured()
+
+        # Store discovery info for later use
+        self._discovered_device = {
+            "hostname": hostname,
+            "ip_address": ip_address,
+            "name": f"FFES Sauna ({hostname})"
+        }
+
+        # Set context for UI
+        self.context.update({
+            "title_placeholders": {"name": hostname},
+            "configuration_url": f"http://{ip_address}",
+        })
+
+        return await self.async_step_zeroconf_confirm()
+
+    async def async_step_zeroconf_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle user confirmation of discovered device."""
+        if user_input is None:
             return self.async_show_form(
-                step_id="discovery",
+                step_id="zeroconf_confirm",
                 data_schema=vol.Schema({
-                    vol.Required("confirm", default=True): bool,
                     vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(
                         vol.Coerce(int), vol.Range(min=5, max=300)
                     ),
                 }),
-                description_placeholders={"host": host},
+                description_placeholders={
+                    "hostname": self._discovered_device["hostname"],
+                    "ip_address": self._discovered_device["ip_address"],
+                },
             )
 
-        # If user submitted the form
-        if user_input is not None:
-            if user_input.get("confirm", False) and self._discovered_host:
-                # Create entry with discovered host
-                data = {
-                    CONF_HOST: self._discovered_host,
-                    CONF_SCAN_INTERVAL: user_input[CONF_SCAN_INTERVAL],
-                }
-                return self.async_create_entry(
-                    title=f"FFES Sauna at {self._discovered_host}",
-                    data=data,
-                )
-            else:
-                # User declined, go to manual setup
-                return await self.async_step_manual()
+        # Create entry with discovered device info
+        data = {
+            CONF_HOST: self._discovered_device["hostname"],  # Use hostname for user display
+            CONF_SCAN_INTERVAL: user_input[CONF_SCAN_INTERVAL],
+        }
 
-        # Fallback to manual if something went wrong
-        return await self.async_step_manual()
+        return self.async_create_entry(
+            title=self._discovered_device["name"],
+            data=data,
+        )
+
 
     async def async_step_manual(
         self, user_input: dict[str, Any] | None = None
