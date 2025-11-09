@@ -8,6 +8,7 @@ from homeassistant.components.climate import (
     ClimateEntityFeature,
     HVACAction,
     HVACMode,
+    PRESET_NONE,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
@@ -15,7 +16,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, SAUNA_STATUS_MAP
+from .const import DOMAIN, SAUNA_STATUS_MAP, SAUNA_PROFILES
 from .coordinator import FFESSaunaCoordinator
 
 
@@ -37,10 +38,14 @@ class FFESSaunaClimate(CoordinatorEntity[FFESSaunaCoordinator], ClimateEntity):
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT, HVACMode.FAN_ONLY, HVACMode.AUTO]
     _attr_supported_features = (
-        ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.FAN_MODE
+        ClimateEntityFeature.TARGET_TEMPERATURE
+        | ClimateEntityFeature.TURN_ON
+        | ClimateEntityFeature.TURN_OFF
+        | ClimateEntityFeature.PRESET_MODE
     )
     _attr_min_temp = 20
     _attr_max_temp = 110
+    _attr_preset_modes = [PRESET_NONE] + list(SAUNA_PROFILES.values())
 
     def __init__(self, coordinator: FFESSaunaCoordinator) -> None:
         """Initialize the climate entity."""
@@ -61,7 +66,7 @@ class FFESSaunaClimate(CoordinatorEntity[FFESSaunaCoordinator], ClimateEntity):
     @property
     def target_temperature(self) -> float | None:
         """Return the target temperature."""
-        return self.coordinator.data.get("setTemp")
+        return self.coordinator.data.get("targetTemp")
 
     @property
     def current_humidity(self) -> int | None:
@@ -98,6 +103,14 @@ class FFESSaunaClimate(CoordinatorEntity[FFESSaunaCoordinator], ClimateEntity):
         else:  # auto/standby
             return HVACAction.IDLE
 
+    @property
+    def preset_mode(self) -> str:
+        """Return current preset mode."""
+        profile = self.coordinator.data.get("profile")
+        if profile and profile in SAUNA_PROFILES:
+            return SAUNA_PROFILES[profile]
+        return PRESET_NONE
+
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new target hvac mode."""
         if hvac_mode == HVACMode.OFF:
@@ -113,40 +126,41 @@ class FFESSaunaClimate(CoordinatorEntity[FFESSaunaCoordinator], ClimateEntity):
         if success:
             await self.coordinator.async_request_refresh()
 
+    async def async_turn_on(self) -> None:
+        """Turn the sauna on."""
+        await self.async_set_hvac_mode(HVACMode.HEAT)
+
+    async def async_turn_off(self) -> None:
+        """Turn the sauna off."""
+        await self.async_set_hvac_mode(HVACMode.OFF)
+
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
         temperature = kwargs.get(ATTR_TEMPERATURE)
         if temperature is None:
             return
 
-        # For temperature changes, we need to start a session with current settings
-        profile = self.coordinator.data.get("profile", 2)  # Default to Dry Sauna
-        session_time = self.coordinator.data.get("sessionTime", 60)  # Default 1 hour
-        ventilation_time = self.coordinator.data.get("ventilationTime", 15)  # Default 15 min
-        aroma_value = self.coordinator.data.get("aromaValue", 0)
-        humidity_value = self.coordinator.data.get("humidityValue", 0)
+        # Try simple temperature command first
+        success = await self.coordinator.async_send_command("set_temp", int(temperature))
+        if success:
+            await self.coordinator.async_request_refresh()
 
-        # Convert session time from HHMM format to HH:MM string
-        hours = session_time // 100 if session_time > 100 else 0
-        minutes = session_time % 100 if session_time > 100 else session_time
-        session_time_str = f"{hours:02d}:{minutes:02d}"
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        """Set new preset mode (sauna profile)."""
+        if preset_mode == PRESET_NONE:
+            return
 
-        # Convert ventilation time
-        v_hours = ventilation_time // 100 if ventilation_time > 100 else 0
-        v_minutes = ventilation_time % 100 if ventilation_time > 100 else ventilation_time
-        ventilation_time_str = f"{v_hours:02d}:{v_minutes:02d}"
+        # Find profile number for the given preset name
+        profile_id = None
+        for pid, pname in SAUNA_PROFILES.items():
+            if pname == preset_mode:
+                profile_id = pid
+                break
 
-        success = await self.coordinator.async_send_command(
-            "start_session",
-            "",  # No direct value for start_session
-            profile=profile,
-            temperature=int(temperature),
-            session_time=session_time_str,
-            ventilation_time=ventilation_time_str,
-            aroma_value=aroma_value,
-            humidity_value=humidity_value,
-        )
+        if profile_id is None:
+            return
 
+        success = await self.coordinator.async_send_command("profile", profile_id)
         if success:
             await self.coordinator.async_request_refresh()
 
