@@ -6,6 +6,7 @@ from typing import Any
 
 import aiohttp
 import asyncio
+import socket
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -28,15 +29,27 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 )
 
 
+async def resolve_host(host: str) -> str:
+    """Resolve mDNS hostname to IP address if needed."""
+    if host.endswith('.local'):
+        try:
+            return socket.gethostbyname(host)
+        except socket.gaierror:
+            # If mDNS resolution fails, try the original host
+            return host
+    return host
+
+
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
     """Validate the user input allows us to connect."""
     host = data[CONF_HOST]
+    resolved_host = await hass.async_add_executor_job(resolve_host, host)
 
     # Test connection to the sauna
     timeout = aiohttp.ClientTimeout(total=10)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         try:
-            async with session.get(f"http://{host}/sauna-data") as response:
+            async with session.get(f"http://{resolved_host}/sauna-data") as response:
                 if response.status != 200:
                     raise CannotConnect(f"HTTP {response.status}")
 

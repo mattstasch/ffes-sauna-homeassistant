@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 from datetime import timedelta
 from typing import Any
 
@@ -22,6 +23,7 @@ class FFESSaunaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def __init__(self, hass: HomeAssistant, host: str, scan_interval: int = DEFAULT_SCAN_INTERVAL) -> None:
         """Initialize coordinator."""
         self.host = host
+        self._resolved_host = None
         self._session = aiohttp.ClientSession()
 
         super().__init__(
@@ -31,12 +33,29 @@ class FFESSaunaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             update_interval=timedelta(seconds=scan_interval),
         )
 
+    def _resolve_host(self, host: str) -> str:
+        """Resolve mDNS hostname to IP address if needed."""
+        if host.endswith('.local'):
+            try:
+                return socket.gethostbyname(host)
+            except socket.gaierror:
+                # If mDNS resolution fails, try the original host
+                return host
+        return host
+
+    async def _get_resolved_host(self) -> str:
+        """Get resolved host, caching the result."""
+        if self._resolved_host is None:
+            self._resolved_host = await self.hass.async_add_executor_job(self._resolve_host, self.host)
+        return self._resolved_host
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from sauna."""
         try:
+            resolved_host = await self._get_resolved_host()
             timeout = aiohttp.ClientTimeout(total=10)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(f"http://{self.host}/sauna-data") as response:
+                async with session.get(f"http://{resolved_host}/sauna-data") as response:
                     if response.status != 200:
                         raise UpdateFailed(f"HTTP {response.status}")
 
@@ -54,6 +73,7 @@ class FFESSaunaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_send_command(self, action: str, value: str | int, **kwargs) -> bool:
         """Send command to sauna."""
         try:
+            resolved_host = await self._get_resolved_host()
             data = {"action": action, "value": str(value)}
 
             # Add additional parameters for session start
@@ -64,7 +84,7 @@ class FFESSaunaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             timeout = aiohttp.ClientTimeout(total=10)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
-                    f"http://{self.host}/sauna-control",
+                    f"http://{resolved_host}/sauna-control",
                     data=data,
                     headers={"Content-Type": "application/x-www-form-urlencoded"}
                 ) as response:
