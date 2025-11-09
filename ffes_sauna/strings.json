@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Set up your FFES Sauna to integrate with Home Assistant.",
+        "data": {
+          "host": "Host or IP Address",
+          "scan_interval": "Update Interval (seconds)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the sauna. Check the host/IP address and ensure the sauna is accessible.",
+      "invalid_data": "Invalid data received from sauna. Check that the device is a FFES Sauna.",
+      "unknown": "Unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "Device is already configured"
+    }
+  }
+}
