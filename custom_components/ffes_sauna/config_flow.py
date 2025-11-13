@@ -159,22 +159,65 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         hostname = discovery_info.hostname.rstrip(".")
         ip_address = str(discovery_info.ip_address)
 
-        _LOGGER.info("Discovered FFES sauna via zeroconf at %s (%s)", hostname, ip_address)
+        # Pre-filter obvious non-FFES devices by hostname
+        hostname_lower = hostname.lower()
+        non_ffes_patterns = [
+            "yamaha", "hwi-", "brw", "ipc-", "router", "switch", "camera",
+            "printer", "tv", "chromecast", "alexa", "google", "apple"
+        ]
+
+        if any(pattern in hostname_lower for pattern in non_ffes_patterns):
+            _LOGGER.debug("Skipping non-FFES device: %s", hostname)
+            return self.async_abort(reason="not_ffes_device")
+
+        _LOGGER.info("Discovered potential FFES sauna via zeroconf at %s (%s)", hostname, ip_address)
 
         # Validate this is actually an FFES sauna by checking Modbus
         client = AsyncModbusTcpClient(host=ip_address, port=502, timeout=3)
         try:
             await client.connect()
             if not client.connected:
+                _LOGGER.debug("Cannot connect to Modbus on %s", ip_address)
                 return self.async_abort(reason="cannot_connect")
 
-            # Test reading controller status register
-            response = await client.read_holding_registers(20, count=1, device_id=1)
-            if isinstance(response, ExceptionResponse) or (hasattr(response, 'isError') and response.isError()):
-                return self.async_abort(reason="invalid_data")
+            # Test multiple FFES-specific registers to confirm it's a sauna
+            ffes_register_tests = [
+                (20, "controller_status"),  # Should be 0-3
+                (2, "actual_temp"),         # Should be reasonable temp
+                (4, "profile"),             # Should be 1-7
+            ]
 
-            if not response.registers:
-                return self.async_abort(reason="invalid_data")
+            valid_responses = 0
+            for reg_addr, reg_name in ffes_register_tests:
+                try:
+                    response = await client.read_holding_registers(reg_addr, count=1, device_id=1)
+                    if (not isinstance(response, ExceptionResponse) and
+                        not (hasattr(response, 'isError') and response.isError()) and
+                        response.registers):
+
+                        value = response.registers[0]
+
+                        # Validate value ranges for FFES sauna
+                        if reg_name == "controller_status" and 0 <= value <= 3:
+                            valid_responses += 1
+                        elif reg_name == "actual_temp" and -20 <= value <= 150:
+                            valid_responses += 1
+                        elif reg_name == "profile" and 1 <= value <= 7:
+                            valid_responses += 1
+
+                        _LOGGER.debug("FFES validation %s @ %d: %s", reg_name, reg_addr, value)
+
+                except Exception:
+                    continue
+
+            # Require at least 2 valid FFES register responses
+            if valid_responses < 2:
+                _LOGGER.debug("Device %s failed FFES validation (%d/3 valid responses)",
+                             ip_address, valid_responses)
+                return self.async_abort(reason="not_ffes_device")
+
+            _LOGGER.info("Validated FFES sauna at %s (%d/3 register checks passed)",
+                        ip_address, valid_responses)
 
         except Exception as err:
             _LOGGER.debug("Failed to validate discovered device via Modbus: %s", err)
@@ -238,14 +281,21 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            _LOGGER.info("Manual config attempt for host: %s", user_input.get(CONF_HOST))
             try:
                 info = await validate_input(self.hass, user_input)
-            except CannotConnect:
+                _LOGGER.info("Manual config validation successful for %s", user_input.get(CONF_HOST))
+            except CannotConnect as err:
+                _LOGGER.warning("Manual config validation failed - cannot connect to %s: %s",
+                              user_input.get(CONF_HOST), err)
                 errors["base"] = "cannot_connect"
-            except InvalidData:
+            except InvalidData as err:
+                _LOGGER.warning("Manual config validation failed - invalid data from %s: %s",
+                              user_input.get(CONF_HOST), err)
                 errors["base"] = "invalid_data"
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception")
+            except Exception as err:  # pylint: disable=broad-except
+                _LOGGER.exception("Manual config validation failed - unexpected exception for %s: %s",
+                                user_input.get(CONF_HOST), err)
                 errors["base"] = "unknown"
             else:
                 # Check if already configured
@@ -254,8 +304,22 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 return self.async_create_entry(title=info["title"], data=user_input)
 
+        # Create dynamic schema that preserves user input on error
+        if user_input is not None:
+            # Use the user's input as default to preserve it after validation error
+            data_schema = vol.Schema({
+                vol.Required(CONF_HOST, default=user_input.get(CONF_HOST, DEFAULT_HOST)): str,
+                vol.Optional(CONF_SCAN_INTERVAL,
+                           default=user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)): vol.All(
+                    vol.Coerce(int), vol.Range(min=5, max=300)
+                ),
+            })
+        else:
+            # First time showing form, use static defaults
+            data_schema = STEP_USER_DATA_SCHEMA
+
         return self.async_show_form(
-            step_id="manual", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+            step_id="manual", data_schema=data_schema, errors=errors
         )
 
 
