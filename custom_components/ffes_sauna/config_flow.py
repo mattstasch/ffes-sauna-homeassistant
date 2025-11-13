@@ -94,7 +94,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
         # Test reading key registers that should always be available
         # Try CONTROLLER_STATUS register (address 20)
         try:
-            response = await client.read_holding_registers(20, count=1, device_id=1)
+            response = await client.read_holding_registers(20, count=1)
         except TypeError:
             # Try alternative syntax for older pymodbus versions
             response = await client.read_holding_registers(20, 1, unit=1)
@@ -112,7 +112,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
         # Try reading actual temperature (address 2)
         try:
-            temp_response = await client.read_holding_registers(2, count=1, device_id=1)
+            temp_response = await client.read_holding_registers(2, count=1)
         except TypeError:
             temp_response = await client.read_holding_registers(2, 1, unit=1)
         if (not isinstance(temp_response, ExceptionResponse) and
@@ -198,7 +198,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             for reg_addr, reg_name in ffes_register_tests:
                 try:
                     try:
-                        response = await client.read_holding_registers(reg_addr, count=1, device_id=1)
+                        response = await client.read_holding_registers(reg_addr, count=1)
                     except TypeError:
                         response = await client.read_holding_registers(reg_addr, 1, unit=1)
                     if (not isinstance(response, ExceptionResponse) and
