@@ -97,7 +97,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
             response = await client.read_holding_registers(20, count=1)
         except TypeError:
             # Try alternative syntax for older pymodbus versions
-            response = await client.read_holding_registers(20, 1, unit=1)
+            response = await client.read_holding_registers(20, 1)
 
         if isinstance(response, ExceptionResponse):
             raise CannotConnect(f"Modbus Exception: {response}")
@@ -114,7 +114,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
         try:
             temp_response = await client.read_holding_registers(2, count=1)
         except TypeError:
-            temp_response = await client.read_holding_registers(2, 1, unit=1)
+            temp_response = await client.read_holding_registers(2, 1)
         if (not isinstance(temp_response, ExceptionResponse) and
             not (hasattr(temp_response, 'isError') and temp_response.isError())):
             actual_temp = temp_response.registers[0] if temp_response.registers else None
@@ -200,7 +200,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     try:
                         response = await client.read_holding_registers(reg_addr, count=1)
                     except TypeError:
-                        response = await client.read_holding_registers(reg_addr, 1, unit=1)
+                        response = await client.read_holding_registers(reg_addr, 1)
                     if (not isinstance(response, ExceptionResponse) and
                         not (hasattr(response, 'isError') and response.isError()) and
                         response.registers):

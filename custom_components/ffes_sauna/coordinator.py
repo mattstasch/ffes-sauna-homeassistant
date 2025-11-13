@@ -103,14 +103,14 @@ class FFESSaunaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             return await client.read_holding_registers(address, count=count)
         except TypeError:
-            return await client.read_holding_registers(address, count, unit=1)
+            return await client.read_holding_registers(address, count)
 
     async def _write_register(self, client: AsyncModbusTcpClient, address: int, value: int) -> Any:
         """Write register with fallback for different pymodbus versions."""
         try:
             return await client.write_register(address, value)
         except TypeError:
-            return await client.write_register(address, value, unit=1)
+            return await client.write_register(address, value)
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from sauna via Modbus."""

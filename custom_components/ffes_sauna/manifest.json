@@ -10,6 +10,7 @@
   "requirements": ["pymodbus>=3.0.0"],
   "version": "1.0.0",
   "zeroconf": [
-    "_modbus._tcp.local."
+    "_modbus._tcp.local.",
+    "_http._tcp.local."
   ]
 }
