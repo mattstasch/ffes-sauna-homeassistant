@@ -4,7 +4,7 @@
 This is a **Home Assistant custom integration** for FFES Sauna controllers that provides local network communication with sauna devices.
 
 **Key Features:**
-- Local HTTP API communication with FFES sauna controllers
+- **Local Modbus TCP communication** with FFES sauna controllers
 - Automatic device discovery via **zeroconf/mDNS**
 - Climate control, switches, sensors, and select entities
 - Real-time sauna status monitoring and control
@@ -22,12 +22,44 @@ This is a **Home Assistant custom integration** for FFES Sauna controllers that 
 ### Integration Type
 - **Domain**: `ffes_sauna`
 - **Type**: `hub` (local polling)
-- **Communication**: HTTP REST API over local network
+- **Communication**: Modbus TCP over local network
 - **Discovery**: Zeroconf automatic discovery + manual fallback
 
-## Recent Major Improvements (2025-11-09)
+## Recent Major Improvements
 
-### ✅ Zeroconf Discovery Implementation
+### ✅ Modbus TCP Conversion (2025-11-13)
+**Major Change**: Converted entire integration from HTTP API to **Modbus TCP** communication.
+
+**Why the change**:
+- HTTP API became unreliable/deprecated on device firmware
+- Modbus TCP provides more direct, reliable communication
+- Better real-time performance and stability
+
+**Implementation Details**:
+- **Protocol**: Modbus TCP on port 502
+- **Unit ID**: 1
+- **Function Code**: 3 (Holding Registers)
+- **Address Format**: 0-based (REG[1] = address 1)
+- **Key Registers**: 1 (temp set), 2 (temp actual), 4 (profile), 20 (status)
+
+**Register Mapping**:
+```
+Address 1:  TEMPERATURE_SET_VALUE    -> setTemp
+Address 2:  TEMP1_ACTUAL_VALUE       -> actualTemp
+Address 4:  SAUNA_PROFILE            -> profile
+Address 20: CONTROLLER_STATUS        -> controllerStatus
+Address 5:  SESSION_TIME             -> sessionTime
+Address 9:  AROMA_SET_VALUE          -> aromaValue
+Address 10: VAPORIZER_HUMIDITY_SET_VALUE -> humidityValue
+```
+
+**Changes Made**:
+- `coordinator.py`: Complete rewrite using pymodbus AsyncModbusTcpClient
+- `config_flow.py`: Replaced HTTP validation with Modbus register reads
+- `manifest.json`: Updated requirements from aiohttp to pymodbus>=3.0.0
+- Discovery: Added `_modbus._tcp.local.` service type
+
+### ✅ Zeroconf Discovery Implementation (2025-11-09)
 **Problem Solved**: Manual mDNS resolution was unreliable and error-prone.
 
 **Solution Implemented**:

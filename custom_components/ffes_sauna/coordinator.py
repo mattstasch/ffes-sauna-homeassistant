@@ -7,7 +7,9 @@ import socket
 from datetime import timedelta
 from typing import Any
 
-import aiohttp
+from pymodbus.client import AsyncModbusTcpClient
+from pymodbus.exceptions import ModbusException
+from pymodbus.pdu import ExceptionResponse
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -24,7 +26,7 @@ class FFESSaunaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Initialize coordinator."""
         self.host = host
         self._resolved_host = None
-        self._session = aiohttp.ClientSession()
+        self._modbus_client = None
 
         super().__init__(
             hass,
@@ -85,62 +87,132 @@ class FFESSaunaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._resolved_host = self.host
         return self._resolved_host
 
-    async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from sauna."""
-        try:
+    async def _get_modbus_client(self) -> AsyncModbusTcpClient:
+        """Get Modbus client, creating if needed."""
+        if self._modbus_client is None:
             resolved_host = await self._get_resolved_host()
-            timeout = aiohttp.ClientTimeout(total=10)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(f"http://{resolved_host}/sauna-data") as response:
-                    if response.status != 200:
-                        raise UpdateFailed(f"HTTP {response.status}")
+            self._modbus_client = AsyncModbusTcpClient(host=resolved_host, port=502, timeout=5)
 
-                    data = await response.json()
-                    _LOGGER.debug("Sauna data: %s", data)
-                    return data
+        if not self._modbus_client.connected:
+            await self._modbus_client.connect()
 
-        except asyncio.TimeoutError as err:
-            raise UpdateFailed("Connection timeout") from err
-        except aiohttp.ClientError as err:
-            raise UpdateFailed(f"Connection error: {err}") from err
+        return self._modbus_client
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        """Fetch data from sauna via Modbus."""
+        try:
+            client = await self._get_modbus_client()
+
+            # Read key registers based on our successful tests
+            # Unit ID = 1, Function Code = 3 (Holding Registers), 0-based addressing
+            register_map = {
+                1: "setTemp",                # TEMPERATURE_SET_VALUE
+                2: "actualTemp",             # TEMP1_ACTUAL_VALUE
+                4: "profile",                # SAUNA_PROFILE
+                20: "controllerStatus",      # CONTROLLER_STATUS
+                # Try additional registers that might be available
+                5: "sessionTime",            # SESSION_TIME
+                6: "ventilationTime",        # VENTILATION_TIME
+                9: "aromaValue",             # AROMA_SET_VALUE
+                10: "humidityValue",         # VAPORIZER_HUMIDITY_SET_VALUE
+                11: "errorCode",             # ERROR_CODE
+                15: "humidity",              # HUMIDITY_ACTUAL_VALUE
+            }
+
+            data = {}
+
+            for reg_addr, key in register_map.items():
+                try:
+                    response = await client.read_holding_registers(reg_addr, count=1, device_id=1)
+                    if (not isinstance(response, ExceptionResponse) and
+                        not (hasattr(response, 'isError') and response.isError())):
+                        value = response.registers[0] if response.registers else 0
+                        data[key] = value
+                        _LOGGER.debug("Register %d (%s): %s", reg_addr, key, value)
+                    else:
+                        _LOGGER.debug("Register %d (%s) failed: %s", reg_addr, key, response)
+                except Exception as reg_err:
+                    _LOGGER.debug("Register %d (%s) error: %s", reg_addr, key, reg_err)
+
+            # Ensure we have minimum required data
+            if 'controllerStatus' not in data or 'actualTemp' not in data:
+                raise UpdateFailed("Missing required sauna data")
+
+            # Add computed fields for compatibility with existing entities
+            data['light'] = False  # Not available via Modbus
+            data['aux'] = False    # Not available via Modbus
+            data['controllerModel'] = 2  # Default value
+
+            _LOGGER.debug("Sauna Modbus data: %s", data)
+            return data
+
+        except ModbusException as err:
+            raise UpdateFailed(f"Modbus error: {err}") from err
         except Exception as err:
             raise UpdateFailed(f"Unexpected error: {err}") from err
 
     async def async_send_command(self, action: str, value: str | int, **kwargs) -> bool:
-        """Send command to sauna."""
+        """Send command to sauna via Modbus."""
         try:
-            resolved_host = await self._get_resolved_host()
-            data = {"action": action, "value": str(value)}
+            client = await self._get_modbus_client()
 
-            # Add additional parameters for session start
-            if action == "start_session":
-                for key, val in kwargs.items():
-                    data[key] = str(val)
+            # Map HTTP actions to Modbus register writes
+            if action == "set_temp":
+                # Write to TEMPERATURE_SET_VALUE register (address 1)
+                response = await client.write_register(1, int(value), device_id=1)
+            elif action == "set_profile":
+                # Write to SAUNA_PROFILE register (address 4)
+                response = await client.write_register(4, int(value), device_id=1)
+            elif action == "start_session":
+                # Set multiple registers for session start
+                # First set session time (address 5)
+                session_time = kwargs.get("time", 1800)  # Default 30 minutes
+                await client.write_register(5, int(session_time), device_id=1)
 
-            timeout = aiohttp.ClientTimeout(total=10)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    f"http://{resolved_host}/sauna-control",
-                    data=data,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"}
-                ) as response:
-                    if response.status != 200:
-                        _LOGGER.error("Command failed with HTTP %s", response.status)
-                        return False
+                # Set profile if provided
+                profile = kwargs.get("profile", 2)
+                await client.write_register(4, int(profile), device_id=1)
 
-                    result = await response.json()
-                    success = result.get("success", False)
+                # Set temperature
+                await client.write_register(1, int(value), device_id=1)
 
-                    if not success:
-                        _LOGGER.error("Command failed: %s", result.get("message", "Unknown error"))
+                # Set aroma if provided
+                aroma = kwargs.get("aroma", 0)
+                await client.write_register(9, int(aroma), device_id=1)
 
-                    return success
+                # Set humidity if provided
+                humidity = kwargs.get("humidity", 0)
+                await client.write_register(10, int(humidity), device_id=1)
+
+                # Start session by setting controller status to HEAT (1)
+                response = await client.write_register(20, 1, device_id=1)
+
+            elif action == "stop_session":
+                # Stop session by setting controller status to OFF (0)
+                response = await client.write_register(20, 0, device_id=1)
+            elif action == "set_controller_status":
+                # Directly set controller status
+                response = await client.write_register(20, int(value), device_id=1)
+            else:
+                _LOGGER.error("Unknown action: %s", action)
+                return False
+
+            # Check response
+            if isinstance(response, ExceptionResponse):
+                _LOGGER.error("Modbus command failed: %s", response)
+                return False
+            elif hasattr(response, 'isError') and response.isError():
+                _LOGGER.error("Modbus command error: %s", response)
+                return False
+
+            _LOGGER.debug("Modbus command successful: %s = %s", action, value)
+            return True
 
         except Exception as err:
-            _LOGGER.error("Error sending command: %s", err)
+            _LOGGER.error("Error sending Modbus command: %s", err)
             return False
 
     async def async_close(self) -> None:
-        """Close the session."""
-        if self._session and not self._session.closed:
-            await self._session.close()
+        """Close the Modbus connection."""
+        if self._modbus_client:
+            self._modbus_client.close()

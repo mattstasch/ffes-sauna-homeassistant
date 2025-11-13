@@ -4,12 +4,15 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import aiohttp
 import asyncio
 import socket
 import voluptuous as vol
 from concurrent.futures import ThreadPoolExecutor
 import time
+
+from pymodbus.client import AsyncModbusTcpClient
+from pymodbus.exceptions import ModbusException
+from pymodbus.pdu import ExceptionResponse
 
 from homeassistant import config_entries
 from homeassistant.components import zeroconf
@@ -17,7 +20,6 @@ from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DEFAULT_HOST, DEFAULT_SCAN_INTERVAL, DOMAIN, CONF_SCAN_INTERVAL
 
@@ -77,30 +79,50 @@ async def resolve_host(hass: HomeAssistant, host: str) -> str:
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
-    """Validate the user input allows us to connect."""
+    """Validate the user input allows us to connect via Modbus."""
     host = data[CONF_HOST]
     resolved_host = await resolve_host(hass, host)
 
-    # Test connection to the sauna
-    timeout = aiohttp.ClientTimeout(total=10)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        try:
-            async with session.get(f"http://{resolved_host}/sauna-data") as response:
-                if response.status != 200:
-                    raise CannotConnect(f"HTTP {response.status}")
+    # Test Modbus connection to the sauna
+    client = AsyncModbusTcpClient(host=resolved_host, port=502, timeout=5)
 
-                data = await response.json()
+    try:
+        await client.connect()
+        if not client.connected:
+            raise CannotConnect("Cannot connect to Modbus server")
 
-                # Validate we got expected sauna data structure
-                if "controllerStatus" not in data or "actualTemp" not in data:
-                    raise InvalidData("Response missing required fields")
+        # Test reading key registers that should always be available
+        # Try CONTROLLER_STATUS register (address 20)
+        response = await client.read_holding_registers(20, count=1, device_id=1)
 
-        except asyncio.TimeoutError:
-            raise CannotConnect("Connection timeout")
-        except aiohttp.ClientError as err:
-            raise CannotConnect(f"Connection error: {err}")
-        except Exception as err:
-            raise CannotConnect(f"Unexpected error: {err}")
+        if isinstance(response, ExceptionResponse):
+            raise CannotConnect(f"Modbus Exception: {response}")
+        elif hasattr(response, 'isError') and response.isError():
+            raise CannotConnect(f"Modbus Error: {response}")
+
+        # Validate we can read at least one register
+        if not response.registers:
+            raise InvalidData("No data received from sauna")
+
+        controller_status = response.registers[0]
+
+        # Try reading actual temperature (address 2)
+        temp_response = await client.read_holding_registers(2, count=1, device_id=1)
+        if (not isinstance(temp_response, ExceptionResponse) and
+            not (hasattr(temp_response, 'isError') and temp_response.isError())):
+            actual_temp = temp_response.registers[0] if temp_response.registers else None
+        else:
+            actual_temp = None
+
+        _LOGGER.info("FFES Sauna validation successful: Status=%s, Temp=%s",
+                    controller_status, actual_temp)
+
+    except ModbusException as err:
+        raise CannotConnect(f"Modbus error: {err}")
+    except Exception as err:
+        raise CannotConnect(f"Unexpected error: {err}")
+    finally:
+        client.close()
 
     return {"title": f"FFES Sauna at {host}"}
 
