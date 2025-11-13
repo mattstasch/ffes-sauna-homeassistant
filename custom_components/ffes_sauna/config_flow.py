@@ -161,21 +161,26 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         _LOGGER.info("Discovered FFES sauna via zeroconf at %s (%s)", hostname, ip_address)
 
-        # Validate this is actually an FFES sauna by checking the API
-        session = async_get_clientsession(self.hass)
+        # Validate this is actually an FFES sauna by checking Modbus
+        client = AsyncModbusTcpClient(host=ip_address, port=502, timeout=3)
         try:
-            timeout = aiohttp.ClientTimeout(total=5)
-            async with session.get(f"http://{ip_address}/sauna-data", timeout=timeout) as response:
-                if response.status != 200:
-                    return self.async_abort(reason="cannot_connect")
+            await client.connect()
+            if not client.connected:
+                return self.async_abort(reason="cannot_connect")
 
-                data = await response.json()
-                if "controllerStatus" not in data or "actualTemp" not in data:
-                    return self.async_abort(reason="invalid_data")
+            # Test reading controller status register
+            response = await client.read_holding_registers(20, count=1, device_id=1)
+            if isinstance(response, ExceptionResponse) or (hasattr(response, 'isError') and response.isError()):
+                return self.async_abort(reason="invalid_data")
+
+            if not response.registers:
+                return self.async_abort(reason="invalid_data")
 
         except Exception as err:
-            _LOGGER.debug("Failed to validate discovered device: %s", err)
+            _LOGGER.debug("Failed to validate discovered device via Modbus: %s", err)
             return self.async_abort(reason="cannot_connect")
+        finally:
+            client.close()
 
         # Use IP address as unique ID (more reliable than hostname)
         await self.async_set_unique_id(ip_address)

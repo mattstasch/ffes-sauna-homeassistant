@@ -66,7 +66,7 @@ class FFESSaunaClimate(CoordinatorEntity[FFESSaunaCoordinator], ClimateEntity):
     @property
     def target_temperature(self) -> float | None:
         """Return the target temperature."""
-        return self.coordinator.data.get("targetTemp")
+        return self.coordinator.data.get("setTemp")
 
     @property
     def current_humidity(self) -> int | None:
