@@ -98,6 +98,20 @@ class FFESSaunaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         return self._modbus_client
 
+    async def _read_holding_register(self, client: AsyncModbusTcpClient, address: int, count: int = 1) -> Any:
+        """Read holding register with fallback for different pymodbus versions."""
+        try:
+            return await client.read_holding_registers(address, count=count)
+        except TypeError:
+            return await client.read_holding_registers(address, count, unit=1)
+
+    async def _write_register(self, client: AsyncModbusTcpClient, address: int, value: int) -> Any:
+        """Write register with fallback for different pymodbus versions."""
+        try:
+            return await client.write_register(address, value)
+        except TypeError:
+            return await client.write_register(address, value, unit=1)
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from sauna via Modbus."""
         try:
@@ -123,7 +137,7 @@ class FFESSaunaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             for reg_addr, key in register_map.items():
                 try:
-                    response = await client.read_holding_registers(reg_addr, count=1, device_id=1)
+                    response = await self._read_holding_register(client, reg_addr, 1)
                     if (not isinstance(response, ExceptionResponse) and
                         not (hasattr(response, 'isError') and response.isError())):
                         value = response.registers[0] if response.registers else 0
@@ -159,40 +173,40 @@ class FFESSaunaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Map HTTP actions to Modbus register writes
             if action == "set_temp":
                 # Write to TEMPERATURE_SET_VALUE register (address 1)
-                response = await client.write_register(1, int(value), device_id=1)
+                response = await self._write_register(client, 1, int(value))
             elif action == "set_profile":
                 # Write to SAUNA_PROFILE register (address 4)
-                response = await client.write_register(4, int(value), device_id=1)
+                response = await self._write_register(client, 4, int(value))
             elif action == "start_session":
                 # Set multiple registers for session start
                 # First set session time (address 5)
                 session_time = kwargs.get("time", 1800)  # Default 30 minutes
-                await client.write_register(5, int(session_time), device_id=1)
+                await self._write_register(client, 5, int(session_time))
 
                 # Set profile if provided
                 profile = kwargs.get("profile", 2)
-                await client.write_register(4, int(profile), device_id=1)
+                await self._write_register(client, 4, int(profile))
 
                 # Set temperature
-                await client.write_register(1, int(value), device_id=1)
+                await self._write_register(client, 1, int(value))
 
                 # Set aroma if provided
                 aroma = kwargs.get("aroma", 0)
-                await client.write_register(9, int(aroma), device_id=1)
+                await self._write_register(client, 9, int(aroma))
 
                 # Set humidity if provided
                 humidity = kwargs.get("humidity", 0)
-                await client.write_register(10, int(humidity), device_id=1)
+                await self._write_register(client, 10, int(humidity))
 
                 # Start session by setting controller status to HEAT (1)
-                response = await client.write_register(20, 1, device_id=1)
+                response = await self._write_register(client, 20, 1)
 
             elif action == "stop_session":
                 # Stop session by setting controller status to OFF (0)
-                response = await client.write_register(20, 0, device_id=1)
+                response = await self._write_register(client, 20, 0)
             elif action == "set_controller_status":
                 # Directly set controller status
-                response = await client.write_register(20, int(value), device_id=1)
+                response = await self._write_register(client, 20, int(value))
             else:
                 _LOGGER.error("Unknown action: %s", action)
                 return False

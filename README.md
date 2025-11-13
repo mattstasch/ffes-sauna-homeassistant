@@ -1,6 +1,6 @@
 # FFES Sauna Home Assistant Integration
 
-A Home Assistant integration for FFES Sauna controllers that provides comprehensive control and monitoring capabilities through your Home Assistant instance.
+A Home Assistant integration for FFES Sauna controllers that provides comprehensive control and monitoring capabilities through Modbus TCP protocol.
 
 ## Features
 
@@ -72,15 +72,16 @@ Then restart Home Assistant and add the integration.
 
 ### Initial Setup
 
-1. Ensure your FFES Sauna controller is connected to your network and accessible via HTTP
-2. Test connectivity by visiting `http://[your-sauna-ip]/sauna-data` in a browser
-3. You should see JSON data with sauna status information
+1. Ensure your FFES Sauna controller is connected to your network with Modbus TCP enabled
+2. Verify Modbus TCP connectivity on port 502
+3. The controller should respond to Modbus holding register reads
 
 ### Configuration Parameters
 
 - **Host**: IP address or hostname of your sauna controller
-  - Default: `ffes.local` (uses mDNS discovery)
+  - Default: `ffes.local` (uses mDNS/zeroconf discovery)
   - Examples: `192.168.1.100`, `sauna.local`, `ffes.local`
+  - Controller must have Modbus TCP enabled on port 502
 
 - **Update Interval**: Polling frequency in seconds
   - Default: 15 seconds
@@ -201,8 +202,8 @@ automation:
 1. **Cannot connect during setup**:
    - Verify the sauna controller is powered on and connected to the network
    - Check the IP address/hostname is correct
-   - Ensure firewall allows HTTP connections on port 80
-   - Test manual connection: `http://[sauna-ip]/sauna-data`
+   - Ensure firewall allows Modbus TCP connections on port 502
+   - Test Modbus connectivity using tools like `mbpoll` or `pymodbus`
 
 2. **Integration goes unavailable**:
    - Check network connectivity to the sauna
@@ -212,9 +213,9 @@ automation:
 ### Data Issues
 
 1. **Entities show unknown/unavailable**:
-   - Check the sauna controller is responding with valid data
-   - Verify the API endpoints return expected JSON structure
-   - Check integration logs for parsing errors
+   - Check the sauna controller is responding to Modbus requests
+   - Verify Modbus holding registers are accessible (addresses 1, 2, 4, 20)
+   - Check integration logs for Modbus connection errors
 
 2. **Updates are slow**:
    - Reduce the update interval in integration configuration
@@ -230,14 +231,29 @@ logger:
     custom_components.ffes_sauna: debug
 ```
 
-## API Reference
+## Modbus Reference
 
-This integration uses the following sauna API endpoints:
+This integration uses Modbus TCP protocol to communicate with the sauna controller:
 
-- **GET** `/sauna-data`: Retrieve current status and settings
-- **POST** `/sauna-control`: Send control commands
+**Key Modbus Parameters:**
+- **Unit ID**: 1
+- **Port**: 502
+- **Function Codes**: 3 (Read Holding Registers), 6 (Write Single Register)
+- **Register Mapping**:
+  - Address 1: Temperature Set Value
+  - Address 2: Actual Temperature
+  - Address 4: Sauna Profile
+  - Address 20: Controller Status
 
-For detailed API documentation, see the `API.md` file in this repository.
+**Register Addresses (0-based):**
+- Temperature control: Register 1
+- Current temperature: Register 2
+- Profile selection: Register 4
+- Status control: Register 20
+- Session time: Register 5
+- Ventilation time: Register 6
+- Aromatherapy: Register 9
+- Humidity control: Register 10
 
 ## Contributing
 

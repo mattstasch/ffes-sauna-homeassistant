@@ -122,7 +122,7 @@ class FFESSaunaClimate(CoordinatorEntity[FFESSaunaCoordinator], ClimateEntity):
         else:  # AUTO
             status_value = 3
 
-        success = await self.coordinator.async_send_command("status", status_value)
+        success = await self.coordinator.async_send_command("set_controller_status", status_value)
         if success:
             await self.coordinator.async_request_refresh()
 
@@ -160,7 +160,7 @@ class FFESSaunaClimate(CoordinatorEntity[FFESSaunaCoordinator], ClimateEntity):
         if profile_id is None:
             return
 
-        success = await self.coordinator.async_send_command("profile", profile_id)
+        success = await self.coordinator.async_send_command("set_profile", profile_id)
         if success:
             await self.coordinator.async_request_refresh()
 
